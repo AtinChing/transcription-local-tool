@@ -1,0 +1,13 @@
+# Environment and caches
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Personal transcripts, recordings, and class folders
+transcripts/
+STA131A/
+*.m4a
+*.mp3
+*.mp4
+*.wav
