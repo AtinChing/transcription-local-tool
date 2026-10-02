@@ -35,6 +35,21 @@ extracts its audio without re-encoding.
 .venv/bin/python transcribe_video.py "<url>" --cookies-from-browser brave   # login-only videos
 ```
 
+*Canvas Media Gallery videos* don't show a direct link, but you can pass the Kaltura
+entry ID instead. To find it:
+
+1. Open the video in Canvas, then open DevTools (`Cmd+Option+I`) → **Network** tab.
+2. Type `entryId` in the filter box and press play on the video.
+3. A request appears containing `.../entryId/1_xxxxxxxx/...`. That `1_xxxxxxxx` is the ID.
+   (If nothing shows up, reload the page with DevTools open and press play again.)
+
+```bash
+.venv/bin/python transcribe_video.py "kaltura:1770401:1_xxxxxxxx" --class ECS174 --session lecture3
+```
+
+`1770401` is UC Davis's Kaltura partner ID and never changes. Pass `--class` for these, since
+titles like `ECS-174: 2026-10-01 13:37` don't match the class folder name.
+
 **`transcribe_media.py`**: transcribe a local audio or video file.
 
 ```bash
