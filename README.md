@@ -55,3 +55,23 @@ titles like `ECS-174: 2026-10-01 13:37` don't match the class folder name.
 ```bash
 .venv/bin/python transcribe_media.py recording.m4a
 ```
+
+## Shell shortcuts (optional)
+
+`shell/shortcuts.sh` adds two commands for bash and zsh that work from any folder. Load it
+from your shell config (use the path to your clone):
+
+```bash
+echo '. ~/path/to/transcription-local-tool/shell/shortcuts.sh' >> ~/.zshrc   # or ~/.bash_profile
+```
+
+Open a new terminal window, then:
+
+```bash
+wholelink "<link>" ECS174 lecture3        # transcribe an online video
+livetranscribe ECS174 lecture3            # live mic, continuous 60s chunks (Ctrl+C to stop)
+```
+
+Order is `<link> <class> <session>` and `<class> <session>`. Extra flags go at the end
+(e.g. `--overwrite`, `--seconds 90`). Run either command with no arguments to get the full
+command pre-filled at your prompt (zsh) or copied to the clipboard (bash), ready to edit.
