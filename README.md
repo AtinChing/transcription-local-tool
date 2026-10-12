@@ -23,7 +23,11 @@ is the parent folder of this repo and each class is a folder inside it.
 ```bash
 .venv/bin/python transcribe_mic.py --list-classes
 .venv/bin/python transcribe_mic.py --class ECS171 --session lecture3 --continuous --seconds 60
+.venv/bin/python transcribe_mic.py --class ECS171 --session lecture3 --continuous --save-audio
 ```
+
+`--save-audio` also keeps the recording as a 16 kHz WAV in `<class>/recordings/<session>.wav`
+(written as it records, never overwritten; pass a path to save elsewhere).
 
 **`transcribe_video.py`**: transcribe an online lecture recording (UC Davis Kaltura
 MediaSpace, or any site yt-dlp supports). For Kaltura it locates the original upload and

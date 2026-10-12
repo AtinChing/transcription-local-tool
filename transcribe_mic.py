@@ -3,6 +3,8 @@
 Record from the default microphone and transcribe with faster-whisper.
 Transcripts are always appended to a per-class, per-session file under
 <School>/<class>/transcripts/<session>.txt
+With --save-audio, the recorded audio is also kept as a WAV under
+<School>/<class>/recordings/<session>.wav
 
 faster-whisper uses CTranslate2 (CPU/CUDA). On Apple Silicon there is no
 PyTorch MPS path; use device=auto or cpu — inference is still fast with int8.
@@ -17,6 +19,7 @@ import signal
 import sys
 import threading
 import time
+import wave
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -115,6 +118,41 @@ def pick_device_and_compute(user_device: str | None) -> tuple[str, str]:
     if sys.platform == "darwin":
         return "cpu", "int8"
     return "auto", "default"
+
+
+def unused_path(path: Path) -> Path:
+    """Return path, or 'name (2).ext', 'name (3).ext', … if it already exists."""
+    candidate, n = path, 2
+    while candidate.exists():
+        candidate = path.with_name(f"{path.stem} ({n}){path.suffix}")
+        n += 1
+    return candidate
+
+
+class AudioSaver:
+    """Writes the exact audio sent to Whisper to a 16 kHz mono 16-bit WAV.
+
+    The WAV header is updated after every chunk, so the file stays playable
+    even if the process is killed mid-session.
+    """
+
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self.frames = 0
+        self._wav = wave.open(str(path), "wb")
+        self._wav.setnchannels(1)
+        self._wav.setsampwidth(2)
+        self._wav.setframerate(SAMPLE_RATE)
+
+    def write(self, audio: np.ndarray) -> None:
+        if len(audio):
+            pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2")
+            self._wav.writeframes(pcm.tobytes())
+            self.frames += len(pcm)
+
+    def close(self) -> None:
+        self._wav.close()
 
 
 _MIN_TRANSCRIBE_SEC = 0.5
@@ -241,6 +279,8 @@ def run() -> int:
             '  %(prog)s --class ECS171 --session "week5-lecture" --seconds 120\n'
             "  %(prog)s --class STA106 --session lecture --continuous --seconds 90\n"
             "    (record 90s chunks until you press Ctrl+C in the terminal)\n"
+            "  %(prog)s --class ECS174 --session lecture5 --continuous --save-audio\n"
+            "    (also keep the audio in <class>/recordings/lecture5.wav)\n"
             "Output: <School>/<class>/transcripts/<session>.txt (always append).\n"
             "Silero VAD is ON by default (--vad-min-silence-ms 5200 for long pauses). "
             "Use --no-vad if breaks still get cut up or the first word after a pause drops."
@@ -342,6 +382,18 @@ def run() -> int:
         default=None,
         help="Append to this file instead of <class>/transcripts/<session>.txt",
     )
+    parser.add_argument(
+        "--save-audio",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Also save the recorded audio as a 16 kHz WAV "
+            "(default: <class>/recordings/<session>.wav; never overwrites, "
+            "adds ' (2)' etc. if the file exists)."
+        ),
+    )
 
     args = parser.parse_args()
     if args.continuous and args.loops != 1:
@@ -373,6 +425,14 @@ def run() -> int:
     if args.output:
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    audio_path: Path | None = None
+    if args.save_audio is not None:
+        if args.save_audio:
+            audio_path = Path(args.save_audio).expanduser()
+        else:
+            audio_path = course_dir / "recordings" / f"{sanitize_session(args.session)}.wav"
+        audio_path = unused_path(audio_path.resolve())
+
     device, compute_type = pick_device_and_compute(args.device)
     if args.device:
         compute_type = "default"
@@ -386,12 +446,17 @@ def run() -> int:
     )
     print(f"Model ready in {time.perf_counter() - t0:.1f}s")
     print(f"Appending to: {out_path}")
+    saver = AudioSaver(audio_path) if audio_path else None
+    if saver:
+        print(f"Saving audio to: {saver.path}")
 
     mic = MicRecorder()
     mic.start()
     print("Microphone stream opened (stays open until done).")
 
     def transcribe_and_append(audio: np.ndarray, i: int, loops_total: int | None) -> None:
+        if saver:
+            saver.write(audio)
         print("Transcribing…")
         lang = None if args.language and args.language.lower() == "auto" else args.language
         use_vad = not args.no_vad
@@ -463,6 +528,8 @@ def run() -> int:
                     print(f"Stopped. Transcribing remaining {dur_sec:.1f}s of audio…")
                     transcribe_and_append(audio, i, None)
                 else:
+                    if saver:
+                        saver.write(audio)
                     print("Stopped (remaining audio too short to transcribe).")
             finally:
                 signal.signal(signal.SIGINT, prev)
@@ -474,6 +541,9 @@ def run() -> int:
                 transcribe_and_append(audio, i, loops)
     finally:
         mic.stop()
+        if saver:
+            saver.close()
+            print(f"Saved audio: {saver.path} ({saver.frames / SAMPLE_RATE:.1f}s)")
 
     print("Done.")
     return 0
