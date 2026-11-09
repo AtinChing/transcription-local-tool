@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Record from the default microphone and transcribe with faster-whisper.
+Record from the default microphone and transcribe with Qwen3-ASR (Apple Silicon)
+or faster-whisper (--engine whisper, and everywhere else).
 Transcripts are always appended to a per-class, per-session file under
 <School>/<class>/transcripts/<session>.txt
 With --save-audio, the recorded audio is also kept as a WAV under
@@ -26,6 +27,8 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
+
+from asr_engine import QwenEngine, add_engine_arguments, resolve_engine, resolve_model
 
 # Default input sample rate for Whisper
 SAMPLE_RATE = 16_000
@@ -330,15 +333,11 @@ def run() -> int:
             "Each cycle uses --seconds of audio (or less if you interrupt mid-chunk)."
         ),
     )
-    parser.add_argument(
-        "--model",
-        default="large-v3-turbo",
-        help="Whisper model size or path (default: large-v3-turbo).",
-    )
+    add_engine_arguments(parser)
     parser.add_argument(
         "--device",
         default=None,
-        help='CTranslate2 device override: cpu, cuda, or auto (default: cpu+int8 on macOS).',
+        help='Whisper only: cpu, cuda, or auto (default: cpu+int8 on macOS).',
     )
     parser.add_argument(
         "--language",
@@ -351,13 +350,16 @@ def run() -> int:
         default=0.82,
         metavar="X",
         help=(
-            "Whisper no-speech gate; higher reduces fake text on silence (default: 0.82)."
+            "Whisper only: no-speech gate; higher reduces fake text on silence (default: 0.82)."
         ),
     )
     parser.add_argument(
         "--no-vad",
         action="store_true",
-        help="Disable Silero VAD (default is ON: silence is removed before Whisper).",
+        help=(
+            "Disable Silero VAD (default is ON: Whisper has silence removed, "
+            "Qwen skips chunks with no speech)."
+        ),
     )
     parser.add_argument(
         "--vad-min-silence-ms",
@@ -365,7 +367,7 @@ def run() -> int:
         default=5200,
         metavar="MS",
         help=(
-            "Silero VAD: how long silence (ms) must last before a speech segment ends. "
+            "Whisper only: how long silence (ms) must last before a speech segment ends. "
             "Default 5200 (~5 s) fits instructors who pause a lot; use 2000 for tighter cuts."
         ),
     )
@@ -374,7 +376,7 @@ def run() -> int:
         type=int,
         default=600,
         metavar="MS",
-        help="Extra audio kept before/after each speech segment (default: 600).",
+        help="Whisper only: extra audio kept before/after each speech segment (default: 600).",
     )
     parser.add_argument(
         "--output",
@@ -433,17 +435,22 @@ def run() -> int:
             audio_path = course_dir / "recordings" / f"{sanitize_session(args.session)}.wav"
         audio_path = unused_path(audio_path.resolve())
 
-    device, compute_type = pick_device_and_compute(args.device)
-    if args.device:
-        compute_type = "default"
-
-    print(f"Loading model {args.model!r} (device={device!r}, compute_type={compute_type!r})…")
+    engine = resolve_engine(args.engine, args.model)
+    model_name = resolve_model(engine, args.model)
     t0 = time.perf_counter()
-    model = WhisperModel(
-        args.model,
-        device=device,
-        compute_type=compute_type,
-    )
+    if engine == "qwen":
+        print(f"Loading model {model_name!r} (MLX, Apple GPU)…")
+        model = QwenEngine(model_name)
+    else:
+        device, compute_type = pick_device_and_compute(args.device)
+        if args.device:
+            compute_type = "default"
+        print(f"Loading model {model_name!r} (device={device!r}, compute_type={compute_type!r})…")
+        model = WhisperModel(
+            model_name,
+            device=device,
+            compute_type=compute_type,
+        )
     print(f"Model ready in {time.perf_counter() - t0:.1f}s")
     print(f"Appending to: {out_path}")
     saver = AudioSaver(audio_path) if audio_path else None
@@ -460,21 +467,24 @@ def run() -> int:
         print("Transcribing…")
         lang = None if args.language and args.language.lower() == "auto" else args.language
         use_vad = not args.no_vad
-        vad_parameters = None
-        if use_vad:
-            vad_parameters = {
-                "min_silence_duration_ms": max(0, args.vad_min_silence_ms),
-                "speech_pad_ms": max(0, args.vad_speech_pad_ms),
-            }
-        segments, info = model.transcribe(
-            audio,
-            language=lang,
-            vad_filter=use_vad,
-            vad_parameters=vad_parameters,
-            log_progress=False,
-            no_speech_threshold=args.no_speech_threshold,
-            condition_on_previous_text=False,
-        )
+        if engine == "qwen":
+            segments, info = model.transcribe(audio, language=lang, vad=use_vad)
+        else:
+            vad_parameters = None
+            if use_vad:
+                vad_parameters = {
+                    "min_silence_duration_ms": max(0, args.vad_min_silence_ms),
+                    "speech_pad_ms": max(0, args.vad_speech_pad_ms),
+                }
+            segments, info = model.transcribe(
+                audio,
+                language=lang,
+                vad_filter=use_vad,
+                vad_parameters=vad_parameters,
+                log_progress=False,
+                no_speech_threshold=args.no_speech_threshold,
+                condition_on_previous_text=False,
+            )
         parts: list[str] = []
         for seg in segments:
             parts.append(seg.text.strip())
@@ -493,7 +503,7 @@ def run() -> int:
             out_path,
             course=args.course.strip(),
             session=sanitize_session(args.session),
-            model_name=args.model,
+            model_name=model_name,
             loop_index=i,
             loops_total=loops_total,
             text=text,

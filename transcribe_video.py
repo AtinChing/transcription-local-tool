@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Download the audio of an online lecture video and transcribe it with faster-whisper.
+Download the audio of an online lecture video and transcribe it with Qwen3-ASR
+(Apple Silicon) or faster-whisper (--engine whisper, and everywhere else).
 
 Built for UC Davis Kaltura MediaSpace links (https://video.ucdavis.edu/media/...),
 but any site yt-dlp supports works too.
@@ -12,8 +13,8 @@ Other sites use yt-dlp's best audio stream.
 
 Output matches transcribe_mic.py: <School>/<class>/transcripts/<session>.txt,
 written in the same block format (one block per --seconds of video time).
-Transcription settings (large-v3-turbo, cpu/int8 on macOS, VAD, no-speech gate,
-silence-hallucination filter) are the same defaults as transcribe_mic.py.
+Transcription settings (engine, model, VAD, no-speech gate, silence-hallucination
+filter) are the same defaults as transcribe_mic.py.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from pathlib import Path
 from faster_whisper import WhisperModel
 import yt_dlp
 
+from asr_engine import QwenEngine, add_engine_arguments, resolve_engine, resolve_model
 from transcribe_mic import (
     default_school_root,
     list_course_dirs,
@@ -170,9 +172,9 @@ def run() -> int:
                         help="Use your browser's login (e.g. brave, chrome) for restricted videos")
     parser.add_argument("--seconds", type=float, default=60.0,
                         help="Video time covered by each transcript block (default: 60)")
-    parser.add_argument("--model", default="large-v3-turbo")
+    add_engine_arguments(parser)
     parser.add_argument("--device", default=None,
-                        help="CTranslate2 device override: cpu, cuda, or auto (default: cpu+int8 on macOS)")
+                        help="Whisper only: cpu, cuda, or auto (default: cpu+int8 on macOS)")
     parser.add_argument("--language", default="en", help="Language code, or 'auto'")
     parser.add_argument("--no-speech-threshold", type=float, default=0.82, metavar="X")
     parser.add_argument("--no-vad", action="store_true", help="Disable Silero VAD")
@@ -225,25 +227,37 @@ def run() -> int:
             kept.write_bytes(audio.read_bytes())
             print(f"Saved audio: {kept}", flush=True)
 
-        device, compute_type = pick_device_and_compute(args.device)
-        print(f"Loading model {args.model!r} (device={device!r}, compute_type={compute_type!r})…",
-              flush=True)
+        engine = resolve_engine(args.engine, args.model)
+        model_name = resolve_model(engine, args.model)
         t0 = time.perf_counter()
-        model = WhisperModel(args.model, device=device, compute_type=compute_type)
+        if engine == "qwen":
+            print(f"Loading model {model_name!r} (MLX, Apple GPU)…", flush=True)
+            model = QwenEngine(model_name)
+        else:
+            device, compute_type = pick_device_and_compute(args.device)
+            print(f"Loading model {model_name!r} (device={device!r}, compute_type={compute_type!r})…",
+                  flush=True)
+            model = WhisperModel(model_name, device=device, compute_type=compute_type)
         print(f"Model ready in {time.perf_counter() - t0:.1f}s", flush=True)
 
         use_vad = not args.no_vad
-        segments, tinfo = model.transcribe(
-            str(audio),
-            language=None if args.language.lower() == "auto" else args.language,
-            vad_filter=use_vad,
-            vad_parameters={
-                "min_silence_duration_ms": max(0, args.vad_min_silence_ms),
-                "speech_pad_ms": max(0, args.vad_speech_pad_ms),
-            } if use_vad else None,
-            no_speech_threshold=args.no_speech_threshold,
-            condition_on_previous_text=False,
-        )
+        language = None if args.language.lower() == "auto" else args.language
+        if engine == "qwen":
+            segments, tinfo = model.transcribe(
+                str(audio), language=language, vad=use_vad, chunk_seconds=max(1.0, args.seconds)
+            )
+        else:
+            segments, tinfo = model.transcribe(
+                str(audio),
+                language=language,
+                vad_filter=use_vad,
+                vad_parameters={
+                    "min_silence_duration_ms": max(0, args.vad_min_silence_ms),
+                    "speech_pad_ms": max(0, args.vad_speech_pad_ms),
+                } if use_vad else None,
+                no_speech_threshold=args.no_speech_threshold,
+                condition_on_previous_text=False,
+            )
         duration = tinfo.duration
         print(f"Transcribing {timestamp(duration)} of audio…", flush=True)
 
@@ -260,7 +274,7 @@ def run() -> int:
                 f"Audio: {audio_note}\n"
                 f"Transcribed (local): {now}\n"
                 f"Class: {course or '-'} | Session: {session}\n"
-                f"Model: {args.model} | Language: {tinfo.language} | Length: {timestamp(duration)}\n"
+                f"Model: {model_name} | Language: {tinfo.language} | Length: {timestamp(duration)}\n"
                 f"{sep}"
             )
 
@@ -272,7 +286,7 @@ def run() -> int:
                     f"\n{sep}"
                     f"Video time: {timestamp(start)} - {timestamp(end)}\n"
                     f"Class: {course or '-'} | Session: {session}\n"
-                    f"Model: {args.model} | Chunk: {index + 1}\n"
+                    f"Model: {model_name} | Chunk: {index + 1}\n"
                     f"{sep}"
                     f"{text}\n"
                 )
