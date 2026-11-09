@@ -1,7 +1,14 @@
 # transcription-local-tool
 
-Local lecture transcription with [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
-(Whisper `large-v3-turbo` by default, CPU + int8 on macOS). Everything runs on your machine.
+Local lecture transcription. Everything runs on your machine.
+
+| Engine | Used | Model | Runs on |
+|---|---|---|---|
+| Qwen3-ASR (via [mlx-audio](https://github.com/Blaizzy/mlx-audio)) | Default on Apple Silicon | `mlx-community/Qwen3-ASR-1.7B-8bit` | Apple GPU |
+| Whisper (via [faster-whisper](https://github.com/SYSTRAN/faster-whisper)) | `--engine whisper`, and everywhere else | `large-v3-turbo` | CPU + int8 on macOS |
+
+All three scripts take `--engine` and `--model`. Passing a non-Qwen `--model` selects Whisper.
+Qwen's model is about 2.5 GB and downloads on first use.
 
 ## Setup
 
@@ -25,6 +32,9 @@ is the parent folder of this repo and each class is a folder inside it.
 .venv/bin/python transcribe_mic.py --class ECS171 --session lecture3 --continuous --seconds 60
 .venv/bin/python transcribe_mic.py --class ECS171 --session lecture3 --continuous --save-audio
 ```
+
+With Qwen, VAD only skips chunks with no speech at all, and every other chunk is transcribed
+whole. `--device`, `--no-speech-threshold` and the `--vad-*` tuning flags apply to Whisper only.
 
 `--save-audio` also keeps the recording as a 16 kHz WAV in `<class>/recordings/<session>.wav`
 (written as it records, never overwritten; pass a path to save elsewhere).
